@@ -1,0 +1,4 @@
+DATASET:
+  NAME: "OxfordFlowers"
+  ATTRIBUTE_FILE: "/home/sourav/ALL_FILES/Thesis/CasPL/data/oxford_flowers/attributes/sampled_attributes.json"
+  NUM_ATTRIBUTES: 3
