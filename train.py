@@ -95,7 +95,7 @@ def extend_cfg(cfg):
     cfg.TRAINER.AGL.CSC = False
     cfg.TRAINER.AGL.CTX_INIT = ""
     cfg.TRAINER.AGL.PREC = "fp16"
-    cfg.TRAINER.AGL.PROMPT_POSITION = "SP-CLS-SP-ATTR"  # Add this line
+    cfg.TRAINER.AGL.PROMPT_POSITION = "CLS-SP-ATTR" 
     cfg.TRAINER.AGL.TEMPERATURE = 0.07
     cfg.TRAINER.AGL.CONTRAST_WEIGHT = 1.0
 

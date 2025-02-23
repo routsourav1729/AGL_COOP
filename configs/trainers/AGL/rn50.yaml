@@ -29,4 +29,11 @@ MODEL:
     NAME: "RN50"
 
 TRAINER:
-  NAME: "AGL" 
+  NAME: "AGL"  
+  AGL:        
+    N_CTX: 16         
+    CSC: False          
+    CTX_INIT: ""     
+    PROMPT_POSITION: "CLS-SP-ATTR"   
+    TEMPERATURE: 0.07   
+    CONTRAST_WEIGHT: 1.0 

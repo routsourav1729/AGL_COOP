@@ -390,8 +390,7 @@ class AGL(TrainerX):
             cls_loss = F.cross_entropy(cls_logits, label)
             
             cont_loss = self.compute_attribute_contrastive_loss(output_dict, label)
-            loss = cls_loss + self.cfg.TRAINER.CONTRAST_WEIGHT * cont_loss
-            
+            loss = cls_loss + self.cfg.TRAINER.AGL.CONTRAST_WEIGHT * cont_loss            
             self.model_backward_and_update(loss)
 
         # Return detailed loss summary
