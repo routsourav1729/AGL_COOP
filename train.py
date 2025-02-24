@@ -1,6 +1,5 @@
 import argparse
 import torch
-import os
 
 from dassl.utils import setup_logger, set_random_seed, collect_env_info
 from dassl.config import get_cfg_default
@@ -27,7 +26,7 @@ import datasets.imagenet_r
 import trainers.coop
 import trainers.cocoop
 import trainers.zsclip
-import trainers.agl_coop
+import trainers.agl
 
 def print_args(args, cfg):
     print("***************")
@@ -88,21 +87,28 @@ def extend_cfg(cfg):
     """
     from yacs.config import CfgNode as CN
 
-    
-
+    cfg.TRAINER.COOP = CN()
+    cfg.TRAINER.COOP.N_CTX = 16  # number of context vectors
+    cfg.TRAINER.COOP.CSC = False  # class-specific context
+    cfg.TRAINER.COOP.CTX_INIT = ""  # initialization words
+    cfg.TRAINER.COOP.PREC = "fp16"  # fp16, fp32, amp
+    cfg.TRAINER.COOP.CLASS_TOKEN_POSITION = "end"  # 'middle' or 'end' or 'front'
     cfg.TRAINER.AGL = CN()
-    cfg.TRAINER.AGL.N_CTX = 16
-    cfg.TRAINER.AGL.CSC = False
-    cfg.TRAINER.AGL.CTX_INIT = ""
-    cfg.TRAINER.AGL.PREC = "fp16"
-    cfg.TRAINER.AGL.PROMPT_POSITION = "CLS-SP-ATTR" 
     cfg.TRAINER.AGL.TEMPERATURE = 0.07
-    cfg.TRAINER.AGL.CONTRAST_WEIGHT = 1.0
+    cfg.TRAINER.AGL.CONTRAST_WEIGHT = 0.01
 
-    # Dataset attribute configurations
+    # Add attribute-related dataset configurations
     cfg.DATASET.ATTRIBUTE_FILE = ""
-    cfg.DATASET.NUM_ATTRIBUTES = 3   # Number of attributes per class to use
+    cfg.DATASET.NUM_ATTRIBUTES = 3
+    
+    
+    cfg.TRAINER.COCOOP = CN()
+    cfg.TRAINER.COCOOP.N_CTX = 16  # number of context vectors
+    cfg.TRAINER.COCOOP.CTX_INIT = ""  # initialization words
+    cfg.TRAINER.COCOOP.PREC = "fp16"  # fp16, fp32, amp
+
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
+
 
 def setup_cfg(args):
     cfg = get_cfg_default()
@@ -116,11 +122,6 @@ def setup_cfg(args):
     if args.config_file:
         cfg.merge_from_file(args.config_file)
 
-    if args.trainer == "AGL":
-        assert cfg.DATASET.ATTRIBUTE_FILE, "ATTRIBUTE_FILE must be specified for AGL"
-        assert os.path.exists(cfg.DATASET.ATTRIBUTE_FILE), \
-            f"Attribute file not found: {cfg.DATASET.ATTRIBUTE_FILE}"
-        assert cfg.TRAINER.NAME == "AGL", "Trainer name must be AGL in config"
     # 3. From input arguments
     reset_cfg(cfg, args)
 
@@ -212,3 +213,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     main(args)
+
