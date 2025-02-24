@@ -27,3 +27,15 @@ TRAIN:
 MODEL:
   BACKBONE:
     NAME: "RN50"
+
+TRAINER:
+  NAME: "AGL"  
+  COOP:        # Move base parameters under COOP namespace since we inherit from it
+    N_CTX: 16         
+    CSC: False          
+    CTX_INIT: ""     
+    CLASS_TOKEN_POSITION: "end"  
+    PREC: "fp16"      
+  AGL:        
+    TEMPERATURE: 0.07   
+    CONTRAST_WEIGHT: 20.0

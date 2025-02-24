@@ -38,6 +38,6 @@ TRAINER:
     PREC: "fp16"      
   AGL:        
     TEMPERATURE: 0.07   
-    CONTRAST_WEIGHT: 1.0
+    CONTRAST_WEIGHT: 20.0
     
    

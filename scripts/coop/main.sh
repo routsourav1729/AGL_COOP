@@ -2,7 +2,7 @@
 
 # custom config
 DATA=/home/sourav/ALL_FILES/Thesis/CasPL/data
-TRAINER=CoOp  # Keep this as CoOp since we're using coop/main.sh
+TRAINER=AGLTrainer 
 
 DATASET=$1
 CFG=$2

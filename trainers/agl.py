@@ -141,25 +141,46 @@ class EnhancedPromptLearner(PromptLearner):
         
         return original_prompts, enhanced_prompts
 
+    def _pad_prompt(self, prompt, max_seq_length):
+        """Helper method to pad a prompt to the specified length"""
+        curr_len = prompt.size(1)
+        if curr_len < max_seq_length:
+            embed_dim = prompt.size(2)
+            padding = torch.zeros(
+                1, max_seq_length - curr_len, embed_dim, 
+                device=prompt.device, 
+                dtype=prompt.dtype
+            )
+            prompt = torch.cat([prompt, padding], dim=1)
+        return prompt
+
     def _create_end_prompts(self):
         """Creates prompts with attributes after class token at the end position"""
         ctx = self.ctx
         if ctx.dim() == 2:
             ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1)
         
+        # First calculate maximum sequence length needed
+        max_seq_length = 0
+        for i in range(self.n_cls):
+            name_len = self.name_lens[i]
+            ctx_len = ctx.size(1)
+            for j in range(self.attribute_embeddings.n_attrs):
+                attr_len = self.attribute_embeddings.get_attribute_embeddings(i, j).size(0)
+                total_len = 1 + ctx_len + name_len + attr_len + 1  # SOS + CTX + CLS + ATTR + EOS
+                max_seq_length = max(max_seq_length, total_len)
+        
+        # Create prompts with padding
         prompts = []
         for i in range(self.n_cls):
-            # Get class tokens (same as in CoOp)
             name_len = self.name_lens[i]
             prefix_i = self.token_prefix[i:i+1, :, :]
             class_i = self.token_suffix[i:i+1, :name_len, :]
             suffix_i = self.token_suffix[i:i+1, name_len:, :]
             
-            # For each attribute of this class
             for j in range(self.attribute_embeddings.n_attrs):
-                # Get attribute embedding
                 attr_j = self.attribute_embeddings.get_attribute_embeddings(i, j)
-                attr_j = attr_j.unsqueeze(0)  # Add batch dimension
+                attr_j = attr_j.unsqueeze(0)
                 
                 # Construct prompt: [SOS][Context][Class][Attribute][EOS]
                 prompt = torch.cat([
@@ -169,6 +190,9 @@ class EnhancedPromptLearner(PromptLearner):
                     attr_j,           # Attribute
                     suffix_i[:, -1:, :]  # EOS
                 ], dim=1)
+                
+                # Pad to max length
+                prompt = self._pad_prompt(prompt, max_seq_length)
                 prompts.append(prompt)
         
         return torch.cat(prompts, dim=0)
@@ -180,9 +204,20 @@ class EnhancedPromptLearner(PromptLearner):
         if ctx.dim() == 2:
             ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1)
         
+        # First calculate maximum sequence length needed
+        max_seq_length = 0
+        for i in range(self.n_cls):
+            name_len = self.name_lens[i]
+            ctx_len = ctx.size(1)
+            for j in range(self.attribute_embeddings.n_attrs):
+                attr_len = self.attribute_embeddings.get_attribute_embeddings(i, j).size(0)
+                # 1 (SOS) + half_ctx + name_len + half_ctx + attr_len + 1 (EOS)
+                total_len = 1 + half_n_ctx + name_len + (ctx_len - half_n_ctx) + attr_len + 1
+                max_seq_length = max(max_seq_length, total_len)
+        
+        # Create prompts with padding
         prompts = []
         for i in range(self.n_cls):
-            # Get class tokens (same as in CoOp)
             name_len = self.name_lens[i]
             prefix_i = self.token_prefix[i:i+1, :, :]
             class_i = self.token_suffix[i:i+1, :name_len, :]
@@ -192,7 +227,6 @@ class EnhancedPromptLearner(PromptLearner):
             ctx_i_half1 = ctx[i:i+1, :half_n_ctx, :]
             ctx_i_half2 = ctx[i:i+1, half_n_ctx:, :]
             
-            # For each attribute
             for j in range(self.attribute_embeddings.n_attrs):
                 attr_j = self.attribute_embeddings.get_attribute_embeddings(i, j)
                 attr_j = attr_j.unsqueeze(0)
@@ -206,6 +240,9 @@ class EnhancedPromptLearner(PromptLearner):
                     attr_j,        # Attribute
                     suffix_i[:, -1:, :]  # EOS
                 ], dim=1)
+                
+                # Pad to max length
+                prompt = self._pad_prompt(prompt, max_seq_length)
                 prompts.append(prompt)
         
         return torch.cat(prompts, dim=0)
@@ -216,15 +253,25 @@ class EnhancedPromptLearner(PromptLearner):
         if ctx.dim() == 2:
             ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1)
         
+        # First calculate maximum sequence length needed
+        max_seq_length = 0
+        for i in range(self.n_cls):
+            name_len = self.name_lens[i]
+            ctx_len = ctx.size(1)
+            for j in range(self.attribute_embeddings.n_attrs):
+                attr_len = self.attribute_embeddings.get_attribute_embeddings(i, j).size(0)
+                # 1 (SOS) + name_len + ctx_len + attr_len + 1 (EOS)
+                total_len = 1 + name_len + ctx_len + attr_len + 1
+                max_seq_length = max(max_seq_length, total_len)
+        
+        # Create prompts with padding
         prompts = []
         for i in range(self.n_cls):
-            # Get class tokens (same as in CoOp)
             name_len = self.name_lens[i]
             prefix_i = self.token_prefix[i:i+1, :, :]
             class_i = self.token_suffix[i:i+1, :name_len, :]
             suffix_i = self.token_suffix[i:i+1, name_len:, :]
             
-            # For each attribute
             for j in range(self.attribute_embeddings.n_attrs):
                 attr_j = self.attribute_embeddings.get_attribute_embeddings(i, j)
                 attr_j = attr_j.unsqueeze(0)
@@ -237,6 +284,9 @@ class EnhancedPromptLearner(PromptLearner):
                     attr_j,            # Attribute
                     suffix_i[:, -1:, :]   # EOS
                 ], dim=1)
+                
+                # Pad to max length
+                prompt = self._pad_prompt(prompt, max_seq_length)
                 prompts.append(prompt)
         
         return torch.cat(prompts, dim=0)
