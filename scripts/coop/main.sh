@@ -24,9 +24,9 @@ do
         --dataset-config-file configs/datasets/${DATASET}.yaml \
         --config-file configs/trainers/${TRAINER}/${CFG}.yaml \
         --output-dir ${DIR} \
-        TRAINER.AGL.N_CTX ${NCTX} \
-        TRAINER.AGL.CSC ${CSC} \
-        TRAINER.AGL.PROMPT_POSITION ${CTP} \
+        TRAINER.COOP.N_CTX ${NCTX} \         # Changed from AGL to COOP
+        TRAINER.COOP.CSC ${CSC} \            # Changed from AGL to COOP
+        TRAINER.COOP.CLASS_TOKEN_POSITION ${CTP} \  # Changed name and namespace
         DATASET.NUM_SHOTS ${SHOTS}
-    fi
+        fi
 done
