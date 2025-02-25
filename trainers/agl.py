@@ -30,7 +30,11 @@ class AttributeEmbedding(nn.Module):
         self.dtype = clip_model.dtype
         self.n_attrs = cfg.DATASET.NUM_ATTRIBUTES
         self.classnames = classnames
-        
+        for class_name in attributes:
+            for i, attr in enumerate(attributes[class_name]):
+                tokens = clip.tokenize(attr)
+                print(f"Class: {class_name}, Attr: {attr}")
+                print(f"Token count: {tokens.shape[1] - 2}")
         # Validate attributes exist for all classes
         for name in classnames:
             assert name in attributes, f"Missing attributes for class {name}"
@@ -71,7 +75,8 @@ class AttributeEmbedding(nn.Module):
                 # Store embeddings and lengths
                 attribute_tokens.append(attr_tokens)
                 self.attr_lens.append(attr_tokens.size(0))
-        
+        print(f"Max attribute length: {max(self.attr_lens)} tokens")
+        print(f"Average attribute length: {sum(self.attr_lens)/len(self.attr_lens):.2f} tokens")
         # Stack all attribute embeddings into a single tensor
         # Register as buffer since we don't need gradients for these
         self.register_buffer(
@@ -160,42 +165,58 @@ class EnhancedPromptLearner(PromptLearner):
         if ctx.dim() == 2:
             ctx = ctx.unsqueeze(0).expand(self.n_cls, -1, -1)
         
-        # First calculate maximum sequence length needed
-        max_seq_length = 0
-        for i in range(self.n_cls):
-            name_len = self.name_lens[i]
-            ctx_len = ctx.size(1)
-            for j in range(self.attribute_embeddings.n_attrs):
-                attr_len = self.attribute_embeddings.get_attribute_embeddings(i, j).size(0)
-                total_len = 1 + ctx_len + name_len + attr_len + 1  # SOS + CTX + CLS + ATTR + EOS
-                max_seq_length = max(max_seq_length, total_len)
+        # CLIP's max context length
+        max_allowed_length = 77
         
-        # Create prompts with padding
         prompts = []
         for i in range(self.n_cls):
             name_len = self.name_lens[i]
-            prefix_i = self.token_prefix[i:i+1, :, :]
-            class_i = self.token_suffix[i:i+1, :name_len, :]
-            suffix_i = self.token_suffix[i:i+1, name_len:, :]
+            prefix_i = self.token_prefix[i:i+1, :, :]  # SOS
+            class_i = self.token_suffix[i:i+1, :name_len, :]  # Class name
+            suffix_i = self.token_suffix[i:i+1, name_len:, :]  # EOS
             
             for j in range(self.attribute_embeddings.n_attrs):
                 attr_j = self.attribute_embeddings.get_attribute_embeddings(i, j)
                 attr_j = attr_j.unsqueeze(0)
+                
+                # Calculate available space for attribute
+                fixed_tokens = 1 + ctx.size(1) + name_len + 1  # SOS + CTX + CLASS + EOS
+                avail_attr_tokens = max_allowed_length - fixed_tokens
+                
+                # Take only as many attribute tokens as will fit
+                if attr_j.size(1) > avail_attr_tokens and avail_attr_tokens > 0:
+                    attr_j = attr_j[:, :avail_attr_tokens, :]
                 
                 # Construct prompt: [SOS][Context][Class][Attribute][EOS]
                 prompt = torch.cat([
                     prefix_i,         # SOS
                     ctx[i:i+1, :, :], # Context
                     class_i,          # Class
-                    attr_j,           # Attribute
+                    attr_j,           # Attribute (now properly sized)
                     suffix_i[:, -1:, :]  # EOS
                 ], dim=1)
                 
-                # Pad to max length
-                prompt = self._pad_prompt(prompt, max_seq_length)
+                # Ensure the total length doesn't exceed CLIP's limit
+                if prompt.size(1) > max_allowed_length:
+                    prompt = prompt[:, :max_allowed_length, :]
+                
                 prompts.append(prompt)
         
-        return torch.cat(prompts, dim=0)
+        # Now pad all prompts to the same length (max_allowed_length)
+        padded_prompts = []
+        for prompt in prompts:
+            curr_len = prompt.size(1)
+            if curr_len < max_allowed_length:
+                embed_dim = prompt.size(2)
+                padding = torch.zeros(
+                    1, max_allowed_length - curr_len, embed_dim, 
+                    device=prompt.device, 
+                    dtype=prompt.dtype
+                )
+                prompt = torch.cat([prompt, padding], dim=1)
+            padded_prompts.append(prompt)
+        
+        return torch.cat(padded_prompts, dim=0)
 
     def _create_middle_prompts(self):
         """Creates prompts with attributes after middle context"""
