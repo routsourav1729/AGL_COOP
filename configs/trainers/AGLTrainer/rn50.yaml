@@ -39,5 +39,6 @@ TRAINER:
   AGL:        
     TEMPERATURE: 0.07   
     CONTRAST_WEIGHT: 1.0
+  NO_WANDB: False
     
    

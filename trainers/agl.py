@@ -1,3 +1,4 @@
+import wandb
 import os.path as osp
 import json
 import torch
@@ -443,6 +444,27 @@ class AGLTrainer(CoOp):
         if torch.cuda.device_count() > 1:
             print(f"Multiple GPUs detected (n_gpus={torch.cuda.device_count()}), use all of them!")
             self.model = nn.DataParallel(self.model)
+    
+        # Initialize wandb
+        try:
+            if not hasattr(cfg.TRAINER, 'NO_WANDB') or not cfg.TRAINER.NO_WANDB:
+                wandb.init(
+                    project="attribute-guided-learning",
+                    name=f"{cfg.DATASET.NAME}_{cfg.MODEL.BACKBONE.NAME}_shots{cfg.DATASET.NUM_SHOTS}_seed{cfg.SEED}",
+                    config={
+                        "dataset": cfg.DATASET.NAME, 
+                        "num_shots": cfg.DATASET.NUM_SHOTS,
+                        "backbone": cfg.MODEL.BACKBONE.NAME,
+                        "contrast_weight": cfg.TRAINER.AGL.CONTRAST_WEIGHT,
+                        "temperature": cfg.TRAINER.AGL.TEMPERATURE
+                    }
+                )
+                self.use_wandb = True
+            else:
+                self.use_wandb = False
+        except Exception as e:
+            print(f"Wandb initialization error: {e}")
+            self.use_wandb = False   
 
     def compute_attribute_contrastive_loss(self, output_dict, labels):
         """
@@ -570,5 +592,16 @@ class AGLTrainer(CoOp):
 
         if (self.batch_idx + 1) == self.num_batches:
             self.update_lr()
-
+        # Log to wandb if enabled
+        if hasattr(self, 'use_wandb') and self.use_wandb:
+            wandb_log = {
+                "train/loss": loss_summary["loss"],
+                "train/acc": loss_summary["acc"],
+                "train/lr": self.get_current_lr()
+            }
+            if "loss_coop" in loss_summary:
+                wandb_log["loss/classification"] = loss_summary["loss_coop"]
+            if "loss_cont" in loss_summary:
+                wandb_log["loss/contrastive"] = loss_summary["loss_cont"]
+            wandb.log(wandb_log)
         return loss_summary
