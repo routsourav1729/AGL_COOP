@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # custom config
-DATA=/path/to/datasets
-TRAINER=CoOp
+DATA=/home/sourav/ALL_FILES/Thesis/CasPL/data
+TRAINER=AGLTrainer
 SHOTS=16
 NCTX=16
 CSC=False
@@ -11,7 +11,7 @@ CTP=end
 DATASET=$1
 CFG=$2
 
-for SEED in 1 2 3
+for SEED in 1 #2 3
 do
     python train.py \
     --root ${DATA} \

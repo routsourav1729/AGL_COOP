@@ -331,55 +331,41 @@ class AGLCustomCLIP(CustomCLIP):
         self.n_attrs = cfg.DATASET.NUM_ATTRIBUTES
 
     def forward(self, image):
-        """
-        Forward pass that handles both original and attribute-enhanced prompts.
-        
-        Args:
-            image: Input image tensor
-            
-        Returns:
-            dict: Contains original logits, attribute logits, and features needed
-                 for loss computation
-        """
-        # Get image features (same as original CLIP)
         image_features = self.image_encoder(image.type(self.dtype))
-        
-        # Get both original and attribute-enhanced prompts
         original_prompts, enhanced_prompts = self.prompt_learner()
-        
-        # Get tokenized prompts (both original and attribute-based)
         orig_tokenized = self.prompt_learner.tokenized_prompts
-        # Create expanded tokenized prompts for attributes (repeat for each attribute)
-        attr_tokenized = orig_tokenized.repeat_interleave(self.n_attrs, dim=0)
-        
-        # Encode both types of prompts using CLIP's text encoder
         text_features_orig = self.text_encoder(original_prompts, orig_tokenized)
-        text_features_attr = self.text_encoder(enhanced_prompts, attr_tokenized)
         
-        # Normalize all features (exactly as in CLIP)
         image_features = image_features / image_features.norm(dim=-1, keepdim=True)
         text_features_orig = text_features_orig / text_features_orig.norm(dim=-1, keepdim=True)
-        text_features_attr = text_features_attr / text_features_attr.norm(dim=-1, keepdim=True)
-        
-        # Compute logit scale (with safety clamp as in CLIP)
         logit_scale = torch.clamp(self.logit_scale.exp(), max=100)
         
-        # Return dictionary with all necessary components for loss computation
+        # Calculate the original logits tensor that will be used for evaluation
+        logits_orig = logit_scale * image_features @ text_features_orig.t()
+        
+        # Check if we're in the test() function by examining the call stack
+        import inspect
+        caller_functions = [frame.function for frame in inspect.stack()]
+        in_test_mode = 'test' in caller_functions
+        
+        if in_test_mode:
+            # If we're in test mode, return the tensor directly
+            return logits_orig
+        
+        # For training, return the full dictionary
+        attr_tokenized = orig_tokenized.repeat_interleave(self.n_attrs, dim=0)
+        text_features_attr = self.text_encoder(enhanced_prompts, attr_tokenized)
+        text_features_attr = text_features_attr / text_features_attr.norm(dim=-1, keepdim=True)
+        
         return {
-            # Original CoOp logits
-            'logits_orig': logit_scale * image_features @ text_features_orig.t(),
-            
-            # Attribute-enhanced logits
+            'logits_orig': logits_orig,
             'logits_attr': logit_scale * image_features @ text_features_attr.t(),
-            
-            # Features for potential additional computations in the trainer
             'image_features': image_features,
             'text_features_orig': text_features_orig,
             'text_features_attr': text_features_attr,
-            
-            # Scale factor for temperature scaling
             'logit_scale': logit_scale
         }
+
 
     def get_text_features(self, prompts, tokenized_prompts):
         """
@@ -388,7 +374,7 @@ class AGLCustomCLIP(CustomCLIP):
         """
         text_features = self.text_encoder(prompts, tokenized_prompts)
         return text_features / text_features.norm(dim=-1, keepdim=True)
-    
+        
 @TRAINER_REGISTRY.register()
 class AGLTrainer(CoOp):
     """
@@ -460,41 +446,69 @@ class AGLTrainer(CoOp):
 
     def compute_attribute_contrastive_loss(self, output_dict, labels):
         """
-        Implements multi-positive contrastive loss that handles multiple attribute-based 
-        positives per class. This creates a proper distribution over positive pairs
-        and computes cross-entropy between predicted and target distributions.
+        Computes a multi-positive contrastive loss using unique attribute-enhanced
+        soft prompt embeddings. For each image, only the attribute embeddings for its
+        own class (e.g. 3 per class) are considered positives and the embeddings for all
+        other unique classes serve as negatives.
+        
+        For example, if there are 5 unique classes:
+        - For an image of class A, the positives are its 3 attribute embeddings,
+            and the negatives are the other 4 classes × 3 = 12 embeddings.
+        - Even if two images come from class A, they share the same positive set,
+            avoiding a situation where the same attribute embeddings act as both positive
+            and negative.
         """
-        image_features = output_dict['image_features']  # [batch_size, dim]
-        text_features = output_dict['text_features_attr']  # [n_cls * n_attrs, dim]
+        image_features = output_dict['image_features']         # [batch_size, dim]
+        full_text_features = output_dict['text_features_attr']    # [n_cls * n_attrs, dim]
         temperature = self.cfg.TRAINER.AGL.TEMPERATURE
-        n_attrs = self.model.module.n_attrs if isinstance(self.model, nn.DataParallel) else self.model.n_attrs
+        n_attrs = (self.model.module.n_attrs if isinstance(self.model, nn.DataParallel)
+                else self.model.n_attrs)
         batch_size = image_features.size(0)
         
-        # Compute similarity matrix
-        logits = torch.matmul(image_features, text_features.t())  # [batch_size, n_cls * n_attrs]
+        # Identify unique classes present in the batch
+        unique_classes = torch.unique(labels)
+        num_unique = unique_classes.size(0)
         
-        # Create ground truth distribution mask
+        # Build a mapping from original class label to its index in the reduced set
+        class_to_index = {cls.item(): idx for idx, cls in enumerate(unique_classes)}
+        
+        # Build a reduced text feature matrix that contains attribute embeddings only
+        # for the unique classes in the batch (each class contributes n_attrs embeddings)
+        reduced_text_features = []
+        for cls in unique_classes:
+            start_idx = cls.item() * n_attrs
+            end_idx = start_idx + n_attrs
+            reduced_text_features.append(full_text_features[start_idx:end_idx])
+        reduced_text_features = torch.cat(reduced_text_features, dim=0)  # [num_unique * n_attrs, dim]
+        
+        # Compute similarity logits between each image and the reduced attribute embeddings
+        logits = torch.matmul(image_features, reduced_text_features.t())  # [batch_size, num_unique * n_attrs]
+        
+        # Create a ground truth mask where for each image, only the embeddings corresponding
+        # to its own class are marked as positives.
         device = image_features.device
-        mask = torch.zeros(batch_size, text_features.size(0), device=device)
+        mask = torch.zeros(batch_size, num_unique * n_attrs, device=device)
         for i in range(batch_size):
-            # Set 1s for all attributes of the correct class
-            pos_start = labels[i] * n_attrs
+            cls = labels[i].item()
+            unique_idx = class_to_index[cls]  # index in the reduced unique set
+            pos_start = unique_idx * n_attrs
             pos_end = pos_start + n_attrs
             mask[i, pos_start:pos_end] = 1.0
-        
-        # Normalize mask to create proper distribution
+
+        # Normalize mask to yield a valid distribution (each row sums to 1)
         p = mask / mask.sum(dim=1, keepdim=True)
         
-        # Apply temperature scaling and compute log probabilities
+        # Scale logits by temperature and improve numerical stability
         logits = logits / temperature
-        # Subtract max for numerical stability
         logits = logits - logits.max(dim=1, keepdim=True)[0].detach()
-        q = F.log_softmax(logits, dim=1)
         
-        # Compute cross entropy between distributions
-        loss = -torch.sum(p * q, dim=1).mean()
+        # Compute log probabilities over the unique attribute embeddings
+        log_probs = F.log_softmax(logits, dim=1)
         
+        # Compute the cross-entropy between the ground truth (p) and predicted (log_probs) distributions
+        loss = -torch.sum(p * log_probs, dim=1).mean()
         return loss
+
 
     def compute_loss(self, output_dict, label):
         """
