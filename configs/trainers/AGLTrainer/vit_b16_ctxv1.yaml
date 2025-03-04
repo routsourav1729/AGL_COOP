@@ -29,5 +29,14 @@ MODEL:
     NAME: "ViT-B/16"
 
 TRAINER:
-  COOP:
-    CTX_INIT: "a photo of a"
+  NAME: "AGL" 
+  COOP:       
+    N_CTX: 16       
+    CSC: False        
+    CTX_INIT: "a photo of a"  
+    CLASS_TOKEN_POSITION: "middle" 
+    PREC: "fp16"  
+  AGL:        
+    TEMPERATURE: 0.2
+    CONTRAST_WEIGHT: 0.5 
+  NO_WANDB: True
