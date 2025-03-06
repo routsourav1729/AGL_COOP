@@ -27,6 +27,7 @@ import trainers.coop
 import trainers.cocoop
 import trainers.zsclip
 import trainers.agl
+import trainers.aglcocoop
 
 def print_args(args, cfg):
     print("***************")
@@ -106,6 +107,13 @@ def extend_cfg(cfg):
     cfg.TRAINER.COCOOP.N_CTX = 16  # number of context vectors
     cfg.TRAINER.COCOOP.CTX_INIT = ""  # initialization words
     cfg.TRAINER.COCOOP.PREC = "fp16"  # fp16, fp32, amp
+    # Add inside extend_cfg() function:
+    cfg.TRAINER.AGCOCOOP = CN()
+    cfg.TRAINER.AGCOCOOP.TEMPERATURE_CONTRAST = 0.07  # temperature for multi-positive contrastive loss
+    cfg.TRAINER.AGCOCOOP.TEMPERATURE_MARGIN = 0.1    # temperature for margin loss (typically higher)
+    cfg.TRAINER.AGCOCOOP.CONTRAST_WEIGHT = 0.01      # weight for the contrastive loss
+    cfg.TRAINER.AGCOCOOP.MARGIN_WEIGHT = 0.005       # weight for the margin loss
+    cfg.TRAINER.AGCOCOOP.MARGIN = 0.5                # alpha value - margin between positive and negative pairs
     cfg.TRAINER.NO_WANDB = False
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
 
