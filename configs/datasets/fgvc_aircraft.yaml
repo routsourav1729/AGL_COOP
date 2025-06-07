@@ -1,2 +1,6 @@
 DATASET:
   NAME: "FGVCAircraft"
+  ATTRIBUTE_FILE: "/raid/biplab/souravr/thesis/multimodal/AGL/data/fgvc_aircraft/attributes/fgvc_aircraft_attributes.json"
+  NUM_ATTRIBUTES: 10
+
+

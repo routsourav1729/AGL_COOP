@@ -1,9 +1,6 @@
 #!/bin/bash
 
-cd ../..
-
-# custom config
-DATA=/path/to/datasets
+DATA=/raid/biplab/souravr/thesis/multimodal/AGL/data
 TRAINER=CoCoOp
 # TRAINER=CoOp
 

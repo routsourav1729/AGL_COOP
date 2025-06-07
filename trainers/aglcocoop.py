@@ -521,11 +521,15 @@ class AGCoCoOpTrainer(CoCoOp):
         
         # Setup mixed precision training
         self.scaler = GradScaler() if cfg.TRAINER.COCOOP.PREC == "amp" else None
-
+        
+        if torch.cuda.is_available():
+            print(f"Using GPU via CUDA_VISIBLE_DEVICES")
         # Handle multi-GPU setup
-        if torch.cuda.device_count() > 1:
-            print(f"Multiple GPUs detected (n_gpus={torch.cuda.device_count()}), use all of them!")
-            self.model = nn.DataParallel(self.model)
+        
+        # if torch.cuda.device_count() > 1:
+        #     print(f"Multiple GPUs detected (n_gpus={torch.cuda.device_count()}), use all of them!")
+            
+        #     self.model = nn.DataParallel(self.model)
     
         # Initialize wandb
         try:
@@ -554,9 +558,10 @@ class AGCoCoOpTrainer(CoCoOp):
     def multi_positive_contrastive_loss(self, output_dict, labels):
         """
         Implements multi-positive contrastive loss for attribute-guided learning,
-        inspired by https://arxiv.org/pdf/2306.00984.pdf.
+        adapted to work with accumulated features from multiple batches.
         
-        This loss treats all attributes of the same class as positive examples.
+        This version works with a larger effective batch size through gradient accumulation
+        and removes hard negative mining, relying on batch diversity instead.
         """
         # Extract features and normalize
         image_features = F.normalize(output_dict['image_features'], p=2, dim=1)
@@ -566,53 +571,63 @@ class AGCoCoOpTrainer(CoCoOp):
         temperature = self.cfg.TRAINER.AGCOCOOP.TEMPERATURE_CONTRAST
         
         # Get dimensions for reshaping
-        n_attrs = (self.model.module.n_attrs if isinstance(self.model, nn.DataParallel)
-                else self.model.n_attrs)
-        n_cls = (self.model.module.n_cls if isinstance(self.model, nn.DataParallel)
-                else self.model.n_cls)
-        batch_size = image_features.size(0)
+        n_attrs = self.model.module.n_attrs if isinstance(self.model, nn.DataParallel) else self.model.n_attrs
+        n_cls = self.model.module.n_cls if isinstance(self.model, nn.DataParallel) else self.model.n_cls
+        batch_size = image_features.size(0)  # This is now the accumulated batch size
         
-        # Reshape text features to [batch_size, n_cls, n_attrs, dim]
-        # First, reshape to separate batch items
-        text_features = text_features.view(batch_size, n_cls, n_attrs, -1)
+        # Calculate total number of text features per batch item
+        text_features_per_item = n_cls * n_attrs
         
-        # Compute similarity between each image and all class-attribute combinations
-        # [batch_size, batch_size, n_cls, n_attrs]
-        similarities = torch.matmul(
-            image_features.unsqueeze(1), 
-            text_features.view(batch_size, n_cls, n_attrs, -1).permute(0, 1, 3, 2)
+        # Reshape text features to ensure they align with the batch structure
+        # Each batch item has text features for all classes and all attributes
+        text_features = text_features.view(batch_size, text_features_per_item, -1)
+        
+        # Compute similarity matrix between all images and all text features
+        # [batch_size, batch_size * text_features_per_item]
+        logits = torch.matmul(
+            image_features, 
+            text_features.view(batch_size * text_features_per_item, -1).t()
         ) / temperature
         
-        # Create mask to identify positive pairs
-        # A positive pair is an image and any attribute from its ground truth class
-        mask = torch.zeros(batch_size, batch_size, n_cls, n_attrs, device=image_features.device)
+        # Create a mask indicating which text features are positive for each image
+        pos_mask = torch.zeros(batch_size, batch_size * text_features_per_item, 
+                            device=image_features.device)
+        
+        # For each image, mark its true class attributes as positives
         for i in range(batch_size):
-            # Get the true class of this image
-            cls_idx = labels[i].item()
-            # All attributes of this class are positives for this image
-            mask[i, i, cls_idx, :] = 1.0
+            # Get the ground truth class for this image
+            label = labels[i].item()
+            
+            # Calculate which text features correspond to this image
+            start_idx = i * text_features_per_item
+            
+            # Mark all attributes of the correct class as positives
+            for j in range(n_attrs):
+                attr_idx = start_idx + (label * n_attrs) + j
+                pos_mask[i, attr_idx] = 1.0
         
-        # Reshape similarities for softmax across all class-attribute combinations
-        flat_similarities = similarities.view(batch_size, batch_size * n_cls * n_attrs)
+        # Add small positive value to all positions to avoid numerical issues
+        # This can help stabilize learning by preventing log(0) errors
+        eps = 1e-6
+        pos_mask = pos_mask + eps
         
-        # Reshape mask to match
-        flat_mask = mask.view(batch_size, batch_size * n_cls * n_attrs)
+        # Normalize the mask to create a valid probability distribution for each image
+        pos_mask = pos_mask / pos_mask.sum(dim=1, keepdim=True)
         
-        # Normalize mask to create a valid probability distribution
-        flat_mask = flat_mask / flat_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        # Compute log softmax along the text feature dimension
+        log_softmax = F.log_softmax(logits, dim=1)
         
-        # Compute log probabilities
-        log_probs = F.log_softmax(flat_similarities, dim=1)
-        
-        # Compute cross-entropy loss (negative of the expected log probability)
-        loss = -(flat_mask * log_probs).sum(dim=1).mean()
+        # Compute the negative log likelihood (cross-entropy) loss
+        # This maximizes the likelihood of the positive pairs
+        loss = -(pos_mask * log_softmax).sum(dim=1).mean()
         
         return loss
 
     def margin_loss(self, output_dict, labels):
         """
-        Implements a margin-based contrastive loss to enforce a minimum 
-        separation between positive and negative pairs.
+        Implements a batch-based margin loss for accumulated features.
+        This version works with larger effective batch sizes and doesn't require
+        explicit hard negative mining.
         """
         # Extract features and normalize
         image_features = F.normalize(output_dict['image_features'], p=2, dim=1)
@@ -623,120 +638,221 @@ class AGCoCoOpTrainer(CoCoOp):
         margin = self.cfg.TRAINER.AGCOCOOP.MARGIN
         
         # Get dimensions for reshaping
-        n_attrs = (self.model.module.n_attrs if isinstance(self.model, nn.DataParallel)
-                else self.model.n_attrs)
-        n_cls = (self.model.module.n_cls if isinstance(self.model, nn.DataParallel)
-                else self.model.n_cls)
+        n_attrs = self.model.module.n_attrs if isinstance(self.model, nn.DataParallel) else self.model.n_attrs
+        n_cls = self.model.module.n_cls if isinstance(self.model, nn.DataParallel) else self.model.n_cls
         batch_size = image_features.size(0)
         
-        # Compute similarity between each image and all text features
-        # [batch_size, batch_size * n_cls * n_attrs]
-        text_features_reshaped = text_features.view(batch_size, n_cls, n_attrs, -1)
+        # Calculate total number of text features per batch item
+        text_features_per_item = n_cls * n_attrs
         
-        # For each image and each attribute of its true class,
-        # we want to ensure it's margin higher than any other class's attributes
-        margin_violations = []
+        # Reshape text features to ensure they align with the batch structure
+        text_features = text_features.view(batch_size, text_features_per_item, -1)
         
+        # Compute all pairwise similarities in one go
+        # [batch_size, batch_size * text_features_per_item]
+        all_similarities = torch.matmul(
+            image_features, 
+            text_features.view(batch_size * text_features_per_item, -1).t()
+        ) / temperature
+        
+        # Initialize loss accumulator
+        margin_loss = 0.0
+        num_positives = 0
+        
+        # Process each image in the batch
         for i in range(batch_size):
-            # Get the true class for this image
-            cls_idx = labels[i].item()
+            # Get the ground truth class for this image
+            label = labels[i].item()
             
-            # Get all positive attributes for this class
-            positive_attrs = text_features_reshaped[i, cls_idx]
+            # Find the feature indices for this batch item
+            batch_start_idx = i * text_features_per_item
             
-            # Compute similarity with this image
-            image_feat = image_features[i].unsqueeze(0)  # [1, dim]
-            pos_similarities = (image_feat @ positive_attrs.transpose(0, 1)).squeeze(0) / temperature
+            # Get indices for positive attributes (same class)
+            pos_indices = [batch_start_idx + (label * n_attrs) + j for j in range(n_attrs)]
             
-            # For each positive attribute
-            for a in range(n_attrs):
-                pos_sim = pos_similarities[a]
+            # Get all positive similarities for this image
+            pos_similarities = all_similarities[i, pos_indices]
+            
+            # Create mask for negative attributes (all other classes)
+            neg_mask = torch.ones(batch_size * text_features_per_item, 
+                                device=image_features.device, dtype=torch.bool)
+            
+            # Mark positives as False in the negative mask
+            for idx in pos_indices:
+                if idx < neg_mask.size(0):  # Safety check
+                    neg_mask[idx] = False
+            
+            # Get all negative similarities
+            neg_similarities = all_similarities[i][neg_mask]
+            
+            if neg_similarities.numel() == 0:
+                continue  # Skip if no negatives (unlikely but possible)
+            
+            # For each positive similarity, compute margin violations against all negatives
+            for pos_sim in pos_similarities:
+                # Find the violation against the hardest negative (highest similarity)
+                # This is simpler and more efficient than computing all pairwise violations
+                hardest_neg_sim = neg_similarities.max()
+                violation = F.relu(margin - (pos_sim - hardest_neg_sim))
                 
-                # Compute similarities with all negative attributes (from other classes)
-                neg_similarities = []
-                for c in range(n_cls):
-                    if c == cls_idx:
-                        continue  # Skip the true class
-                    
-                    # Get attributes for this negative class
-                    neg_attrs = text_features_reshaped[i, c]
-                    neg_sims = (image_feat @ neg_attrs.transpose(0, 1)).squeeze(0) / temperature
-                    neg_similarities.append(neg_sims)
-                
-                # Stack all negative similarities
-                if neg_similarities:
-                    neg_similarities = torch.cat(neg_similarities)
-                    
-                    # For each positive similarity, find the hardest negative
-                    hardest_neg_sim = neg_similarities.max()
-                    
-                    # Compute margin violation: max(0, margin - (pos_sim - neg_sim))
-                    violation = F.relu(margin - (pos_sim - hardest_neg_sim))
-                    margin_violations.append(violation)
+                if violation > 0:
+                    margin_loss += violation
+                    num_positives += 1
         
-        # If no violations were found, return zero loss
-        if not margin_violations:
+        # Return average margin violation (or zero if no positives)
+        if num_positives > 0:
+            return margin_loss / num_positives
+        else:
             return torch.tensor(0.0, device=image_features.device)
-        
-        # Average margin violations across all positive pairs
-        margin_loss = torch.stack(margin_violations).mean()
-        
-        return margin_loss
-
-    def compute_loss(self, output_dict, label):
-        """
-        Computes combined loss from classification, multi-positive contrastive,
-        and margin losses.
-        """
-        # Original CoCoOp classification loss
-        orig_logits = output_dict['logits_orig']
-        loss_cocoop = F.cross_entropy(orig_logits, label)
-
-        # Add multi-positive contrastive loss
-        cont_loss = self.multi_positive_contrastive_loss(output_dict, label)
-        
-        # Add margin loss
-        marg_loss = self.margin_loss(output_dict, label)
-        
-        # Combine losses with their respective weights
-        total_loss = loss_cocoop + \
-                    self.cfg.TRAINER.AGCOCOOP.CONTRAST_WEIGHT * cont_loss + \
-                    self.cfg.TRAINER.AGCOCOOP.MARGIN_WEIGHT * marg_loss
-        
-        # Store individual losses for logging
-        self.loss_summary = {
-            "loss_cocoop": loss_cocoop.item(),
-            "loss_cont": cont_loss.item(),
-            "loss_margin": marg_loss.item()
-        }
-        
-        return total_loss
 
     def forward_backward(self, batch):
         """
-        Performs forward and backward passes, inheriting CoCoOp's precision handling
-        while adding our attribute-guided learning with margin loss.
+        Performs forward and backward passes with gradient accumulation over 8 images.
         """
         image, label = self.parse_batch_train(batch)
+        
+        # Initialize accumulation variables if not already done
+        if not hasattr(self, 'accumulated_features'):
+            self.accumulated_features = {
+                'image_features': [],
+                'text_features_attr': [],
+                'logits_orig': []
+            }
+            self.accumulated_labels = []
+            self.accumulated_count = 0
+            self.accumulation_steps = 8  # Accumulate over 8 images
         
         # Handle different precision modes
         if self.cfg.TRAINER.COCOOP.PREC == "amp":
             with autocast():
+                # Forward pass
                 output_dict = self.model(image, label)
-                loss = self.compute_loss(output_dict, label)
+                
+                # Store just the loss for CoCoOp (apply immediately)
+                loss_cocoop = F.cross_entropy(output_dict['logits_orig'], label)
+                
+                # Store features for later contrastive/margin loss computation
+                self.accumulated_features['image_features'].append(output_dict['image_features'].detach())
+                self.accumulated_features['text_features_attr'].append(output_dict['text_features_attr'].detach())
+                self.accumulated_features['logits_orig'].append(output_dict['logits_orig'].detach())
+                self.accumulated_labels.append(label)
+                self.accumulated_count += 1
+                
+                # Only compute contrastive losses after accumulating enough samples
+                if self.accumulated_count >= self.accumulation_steps:
+                    # Combine accumulated features
+                    combined_dict = {
+                        'image_features': torch.cat(self.accumulated_features['image_features'], dim=0),
+                        'text_features_attr': torch.cat(self.accumulated_features['text_features_attr'], dim=0),
+                        'logits_orig': torch.cat(self.accumulated_features['logits_orig'], dim=0),
+                    }
+                    combined_labels = torch.cat(self.accumulated_labels, dim=0)
+                    
+                    # Compute contrastive and margin losses on accumulated batch
+                    cont_loss = self.multi_positive_contrastive_loss(combined_dict, combined_labels)
+                    marg_loss = self.margin_loss(combined_dict, combined_labels)
+                    
+                    # Combine with the current CoCoOp loss
+                    total_loss = loss_cocoop + \
+                                self.cfg.TRAINER.AGCOCOOP.CONTRAST_WEIGHT * cont_loss + \
+                                self.cfg.TRAINER.AGCOCOOP.MARGIN_WEIGHT * marg_loss
+                    
+                    # Store for logging
+                    self.loss_summary = {
+                        "loss_cocoop": loss_cocoop.item(),
+                        "loss_cont": cont_loss.item(),
+                        "loss_margin": marg_loss.item()
+                    }
+                else:
+                    # Just use CoCoOp loss when still accumulating
+                    total_loss = loss_cocoop
+                    self.loss_summary = {
+                        "loss_cocoop": loss_cocoop.item(),
+                        "loss_cont": 0.0,
+                        "loss_margin": 0.0
+                    }
             
+            # Backward pass and optimization
             self.optim.zero_grad()
-            self.scaler.scale(loss).backward()
-            self.scaler.step(self.optim)
-            self.scaler.update()
+            self.scaler.scale(total_loss).backward()
+            
+            # Only update weights after accumulating enough samples
+            if self.accumulated_count >= self.accumulation_steps:
+                self.scaler.step(self.optim)
+                self.scaler.update()
+                
+                # Reset accumulation
+                self.accumulated_features = {
+                    'image_features': [],
+                    'text_features_attr': [],
+                    'logits_orig': []
+                }
+                self.accumulated_labels = []
+                self.accumulated_count = 0
         else:
+            # Same logic but without mixed precision
             output_dict = self.model(image, label)
-            loss = self.compute_loss(output_dict, label)
-            self.model_backward_and_update(loss)
+            
+            # Store just the loss for CoCoOp (apply immediately)
+            loss_cocoop = F.cross_entropy(output_dict['logits_orig'], label)
+            
+            # Store features for later contrastive/margin loss computation
+            self.accumulated_features['image_features'].append(output_dict['image_features'].detach())
+            self.accumulated_features['text_features_attr'].append(output_dict['text_features_attr'].detach())
+            self.accumulated_features['logits_orig'].append(output_dict['logits_orig'].detach())
+            self.accumulated_labels.append(label)
+            self.accumulated_count += 1
+            
+            # Only compute contrastive losses after accumulating enough samples
+            if self.accumulated_count >= self.accumulation_steps:
+                # Combine accumulated features
+                combined_dict = {
+                    'image_features': torch.cat(self.accumulated_features['image_features'], dim=0),
+                    'text_features_attr': torch.cat(self.accumulated_features['text_features_attr'], dim=0),
+                    'logits_orig': torch.cat(self.accumulated_features['logits_orig'], dim=0),
+                }
+                combined_labels = torch.cat(self.accumulated_labels, dim=0)
+                
+                # Compute contrastive and margin losses on accumulated batch
+                cont_loss = self.multi_positive_contrastive_loss(combined_dict, combined_labels)
+                marg_loss = self.margin_loss(combined_dict, combined_labels)
+                
+                # Combine with the current CoCoOp loss
+                total_loss = loss_cocoop + \
+                            self.cfg.TRAINER.AGCOCOOP.CONTRAST_WEIGHT * cont_loss + \
+                            self.cfg.TRAINER.AGCOCOOP.MARGIN_WEIGHT * marg_loss
+                
+                # Store for logging
+                self.loss_summary = {
+                    "loss_cocoop": loss_cocoop.item(),
+                    "loss_cont": cont_loss.item(),
+                    "loss_margin": marg_loss.item()
+                }
+            else:
+                # Just use CoCoOp loss when still accumulating
+                total_loss = loss_cocoop
+                self.loss_summary = {
+                    "loss_cocoop": loss_cocoop.item(),
+                    "loss_cont": 0.0,
+                    "loss_margin": 0.0
+                }
+            
+            # Backward pass
+            self.model_backward_and_update(total_loss)
+            
+            # Reset accumulation if needed
+            if self.accumulated_count >= self.accumulation_steps:
+                self.accumulated_features = {
+                    'image_features': [],
+                    'text_features_attr': [],
+                    'logits_orig': []
+                }
+                self.accumulated_labels = []
+                self.accumulated_count = 0
 
         # Prepare loss summary for logging
         loss_summary = {
-            "loss": loss.item(),
+            "loss": total_loss.item(),
             "acc": compute_accuracy(output_dict['logits_orig'], label)[0].item(),
         }
         

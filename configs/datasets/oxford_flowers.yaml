@@ -1,4 +1,5 @@
 DATASET:
   NAME: "OxfordFlowers"
-  ATTRIBUTE_FILE: "/home/sourav/ALL_FILES/Thesis/CasPL/data/oxford_flowers/attributes/sampled_attributes.json"
-  NUM_ATTRIBUTES: 3
+  # ATTRIBUTE_FILE: "/raid/biplab/datasets/sourav/data/oxford_flowers/attributes/sampled_attributes.json"
+  ATTRIBUTE_FILE: "/raid/biplab/souravr/thesis/multimodal/AGL/data/oxford_flowers/attributes/oxford_flowers_attributes.json"
+  NUM_ATTRIBUTES: 10

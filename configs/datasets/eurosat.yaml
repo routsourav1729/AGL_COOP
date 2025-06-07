@@ -1,2 +1,4 @@
 DATASET:
   NAME: "EuroSAT"
+  ATTRIBUTE_FILE: "/raid/biplab/souravr/thesis/multimodal/AGL/data/eurosat/attributes/eurosat_attributes.json"
+  NUM_ATTRIBUTES: 10

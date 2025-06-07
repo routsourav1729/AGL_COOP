@@ -1,2 +1,4 @@
 DATASET:
   NAME: "Food101"
+  ATTRIBUTE_FILE: "/raid/biplab/souravr/thesis/multimodal/AGL/data/food-101/attributes/food-101_attributes.json"
+  NUM_ATTRIBUTES: 10

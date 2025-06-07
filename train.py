@@ -28,6 +28,7 @@ import trainers.cocoop
 import trainers.zsclip
 import trainers.agl
 import trainers.aglcocoop
+import trainers.crosscocoop 
 
 def print_args(args, cfg):
     print("***************")
@@ -87,7 +88,7 @@ def extend_cfg(cfg):
         cfg.TRAINER.MY_MODEL.PARAM_C = False
     """
     from yacs.config import CfgNode as CN
-
+    cfg.GPU_ID = 0
     cfg.TRAINER.COOP = CN()
     cfg.TRAINER.COOP.N_CTX = 16  # number of context vectors
     cfg.TRAINER.COOP.CSC = False  # class-specific context
@@ -113,7 +114,20 @@ def extend_cfg(cfg):
     cfg.TRAINER.AGCOCOOP.TEMPERATURE_MARGIN = 0.1    # temperature for margin loss (typically higher)
     cfg.TRAINER.AGCOCOOP.CONTRAST_WEIGHT = 0.01      # weight for the contrastive loss
     cfg.TRAINER.AGCOCOOP.MARGIN_WEIGHT = 0.005       # weight for the margin loss
-    cfg.TRAINER.AGCOCOOP.MARGIN = 0.5                # alpha value - margin between positive and negative pairs
+    cfg.TRAINER.AGCOCOOP.MARGIN = 0.5   
+    
+    
+    cfg.TRAINER.CROSSCOCOOP = CN()
+    cfg.TRAINER.CROSSCOCOOP.N_CTX = 16            # Number of context tokens.
+    cfg.TRAINER.CROSSCOCOOP.CTX_INIT = ""           # Initialization string (empty if random).
+    cfg.TRAINER.CROSSCOCOOP.PREC = "fp16"           # Precision mode: "fp16", "fp32", or "amp".
+    cfg.TRAINER.CROSSCOCOOP.NUM_HEADS = 8           # Number of attention heads.
+    cfg.TRAINER.CROSSCOCOOP.ATTN_DROPOUT = 0.1      # Dropout rate for attention.
+    cfg.TRAINER.CROSSCOCOOP.ATTRIBUTE_DROPOUT = 0.1  
+    cfg.TRAINER.CROSSCOCOOP.MAX_ATTR_TOKENS = 10      # Maximum tokens per attribute
+    cfg.TRAINER.CROSSCOCOOP.ALIGNMENT_WEIGHT = 0.1    # Weight for attribute alignment loss
+    cfg.TRAINER.CROSSCOCOOP.DIVERSITY_WEIGHT = 0.05   # Weight for attention diversity loss
+    
     cfg.TRAINER.NO_WANDB = False
     cfg.DATASET.SUBSAMPLE_CLASSES = "all"  # all, base or new
 
@@ -136,6 +150,8 @@ def setup_cfg(args):
     # 4. From optional input arguments
     cfg.merge_from_list(args.opts)
 
+    if args.gpu is not None:
+        cfg.GPU_ID = args.gpu
     cfg.freeze()
 
     return cfg
@@ -218,6 +234,12 @@ if __name__ == "__main__":
         default=None,
         nargs=argparse.REMAINDER,
         help="modify config options using the command-line",
+    )
+    parser.add_argument(
+    "--gpu", 
+    type=int, 
+    default=0, 
+    help="Specify the GPU device number to use"
     )
     args = parser.parse_args()
     main(args)

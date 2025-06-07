@@ -1,2 +1,4 @@
 DATASET:
   NAME: "DescribableTextures"
+  ATTRIBUTE_FILE: "/raid/biplab/souravr/thesis/multimodal/AGL/data/dtd/attributes/dtd_attributes.json"
+  NUM_ATTRIBUTES: 10

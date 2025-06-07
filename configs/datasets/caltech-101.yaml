@@ -1,0 +1,4 @@
+DATASET:
+  NAME: "Caltech101"
+  ATTRIBUTE_FILE: "/raid/biplab/souravr/thesis/multimodal/AGL/data/caltech-101/attributes/caltech-101_attributes.json"
+  NUM_ATTRIBUTES: 10

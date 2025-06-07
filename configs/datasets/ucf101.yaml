@@ -1,2 +1,4 @@
 DATASET:
   NAME: "UCF101"
+  ATTRIBUTE_FILE: "/raid/biplab/souravr/thesis/multimodal/AGL/data/ucf101/attributes/ucf101_attributes.json"
+  NUM_ATTRIBUTES: 10

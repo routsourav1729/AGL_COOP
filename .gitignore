@@ -132,3 +132,4 @@ dmypy.json
 output/
 debug.sh
 wandb/
+data/
